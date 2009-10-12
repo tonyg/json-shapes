@@ -20,6 +20,14 @@ class regexp(Schema):
     def match(self, v):
         return False if self.r.match(v) else "regexp failed: " + self.pat
 
+class number(Schema):
+    def match(self, v):
+        return False if isinstance(v, int) or isinstance(v, float) else "Expected number"
+
+class string(Schema):
+    def match(self, v):
+        return False if isinstance(v, str) or isinstance(v, unicode) else "Expected string"
+
 class nonempty_string(Schema):
     def match(self, v):
         if (isinstance(v, str) or isinstance(v, unicode)) \
@@ -27,6 +35,16 @@ class nonempty_string(Schema):
             return False
         else:
             return "Expected non-empty string"
+
+class anything(Schema):
+    def match(self, v):
+        return False
+
+class _not(Schema):
+    def __init__(self, t):
+        self.t = t
+    def match(self, v):
+        return False if validate(v, self.t) else "Negation failed"
 
 class dictionary(Schema):
     def __init__(self, keyType, valueType):
@@ -79,10 +97,8 @@ class email(regexp):
         # TODO: better error message
         regexp.__init__(self, r"^\S+@[^.\s]\S*\.[^.\s]{2,}$")
 
-class or_dict(Schema):
+class general_or(Schema):
     def __init__(self, options):
-        if not (isinstance(options, dict) and options):
-            raise InvalidSchema("or_dict with non-dictionary or no options")
         self.options = options
     def match(self, v):
         result = {}
@@ -91,6 +107,27 @@ class or_dict(Schema):
             if not intermediate: return False
             result[key] = intermediate
         return result
+
+class or_dict(general_or):
+    def __init__(self, options):
+        if not (isinstance(options, dict) and options):
+            raise InvalidSchema("or_dict with non-dictionary or no options")
+        general_or.__init__(self, options)
+
+class _or(general_or):
+    def __init__(self, *optionlist):
+        if not optionlist:
+            raise InvalidSchema("_or with no options")
+        general_or.__init__(self, dict(zip(range(len(optionlist)), optionlist)))
+
+class _and(Schema):
+    def __init__(self, *schemas):
+        self.schemas = schemas
+    def match(self, v):
+        for t in self.schemas:
+            intermediate = validate(v, t)
+            if intermediate: return intermediate
+        return False
 
 def validate(v, t):
     if isinstance(t, Schema):
@@ -143,7 +180,13 @@ global_environment = {
     'merge': merge,
     'optional': optional,
     'email': email,
-    'or_dict': or_dict
+    'or_dict': or_dict,
+    'number': number,
+    'string': string,
+    'anything': anything,
+    '_not': _not,
+    '_or': _or,
+    '_and': _and
 }
 
 def load_schema(filename, extendingEnvironment = None):
