@@ -162,7 +162,7 @@ function array_of(schema) {
     };
 }
 
-function not(schema) {
+function _not(schema) {
     return function (obj) { return validate(obj, schema) ? false : "Negation failed"; };
 }
 
@@ -180,7 +180,7 @@ function or_validator(schemas) {
     };
 }
 
-function or() {
+function _or() {
     return or_validator(arguments);
 }
 
@@ -188,7 +188,7 @@ function or_dict(d) {
     return or_validator(d);
 }
 
-function and() {
+function _and() {
     var schemas = arguments;
     return function (obj) {
 	for (var i = 0; i < schemas.length; i++) {
