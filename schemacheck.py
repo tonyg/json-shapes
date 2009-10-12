@@ -9,51 +9,58 @@ class InvalidSchema(Exception): pass
 
 absent = object()
 
-def regexp(pat):
-    r = re.compile(pat)
-    def match(v):
-        return False if r.match(v) else "regexp failed: " + pat
-    return match
+class Schema:
+    def match(self, v):
+        raise NotImplementedError("Subclass responsibility")
 
-def nonempty_string():
-    def match(v):
+class regexp(Schema):
+    def __init__(self, pat):
+        self.pat = pat
+        self.r = re.compile(pat)
+    def match(self, v):
+        return False if self.r.match(v) else "regexp failed: " + self.pat
+
+class nonempty_string(Schema):
+    def match(self, v):
         if (isinstance(v, str) or isinstance(v, unicode)) \
                 and len(v) > 0:
             return False
         else:
             return "Expected non-empty string"
-    return match
 
-def dictionary(keyType, valueType):
-    def match(v):
+class dictionary(Schema):
+    def __init__(self, keyType, valueType):
+        self.keyType = keyType
+        self.valueType = valueType
+    def match(self, v):
         haveResult = False
         result = {}
         for (key, val) in v.iteritems():
-            intermediate = validate(key, keyType)
+            intermediate = validate(key, self.keyType)
             if intermediate:
                 result["key " + str(key)] = intermediate
                 haveResult = True
             else:
-                intermediate = validate(val, valueType)
+                intermediate = validate(val, self.valueType)
                 if intermediate:
                     result["valueAt " + str(key)] = intermediate
                     haveResult = True
         return result if haveResult else False
-    return match
 
-def array_of(t):
-    def match(v):
+class array_of(Schema):
+    def __init__(self, elementType):
+        self.elementType = elementType
+    def match(self, v):
         haveResult = False
         result = {}
         counter = 0
         for val in v:
-            intermediate = validate(val, t)
+            intermediate = validate(val, self.elementType)
             if intermediate:
                 result[counter] = intermediate
                 haveResult = True
             counter = counter + 1
         return result if haveResult else False
-    return match
 
 def merge(*pieces):
     result = {}
@@ -61,31 +68,34 @@ def merge(*pieces):
         result.update(piece)
     return result
 
-def optional(t):
-    def match(v):
-        return False if v == absent else validate(v, t)
-    return match
+class optional(Schema):
+    def __init__(self, t):
+        self.t = t
+    def match(self, v):
+        return False if v == absent else validate(v, self.t)
 
-def email():
-    return regexp(r"^\S+@[^.\s]\S*\.[^.\s]{2,}$")
+class email(regexp):
+    def __init__(self):
+        # TODO: better error message
+        regexp.__init__(self, r"^\S+@[^.\s]\S*\.[^.\s]{2,}$")
 
-def or_dict(d):
-    def match(v):
+class or_dict(Schema):
+    def __init__(self, options):
+        if not (isinstance(options, dict) and options):
+            raise InvalidSchema("or_dict with non-dictionary or no options")
+        self.options = options
+    def match(self, v):
         result = {}
-        for (key, valType) in d.iteritems():
+        for (key, valType) in self.options.iteritems():
             intermediate = validate(v, valType)
             if not intermediate: return False
             result[key] = intermediate
         return result
-    if isinstance(d, dict) and d:
-        return match
-    else:
-        raise InvalidSchema("or_dict with non-dictionary or no options")
 
 def validate(v, t):
-    if isinstance(t, types.FunctionType):
+    if isinstance(t, Schema):
         try:
-            return t(v)
+            return t.match(v)
         except:
             (t, v, tb) = sys.exc_info()
             err = '\n'.join(traceback.format_exception_only(t, v))
