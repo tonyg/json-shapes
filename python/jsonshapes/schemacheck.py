@@ -5,30 +5,30 @@ import re
 import traceback
 import types
 
-class InvalidSchema(Exception): pass
+class InvalidDescriptor(Exception): pass
 
 absent = object()
 
-class Schema:
+class Descriptor:
     def match(self, v):
         raise NotImplementedError("Subclass responsibility")
 
-class regexp(Schema):
+class RegexpDescriptor(Descriptor):
     def __init__(self, pat):
         self.pat = pat
         self.r = re.compile(pat)
     def match(self, v):
         return False if self.r.match(v) else "regexp failed: " + self.pat
 
-class number(Schema):
+class NumberDescriptor(Descriptor):
     def match(self, v):
         return False if isinstance(v, int) or isinstance(v, float) else "Expected number"
 
-class string(Schema):
+class StringDescriptor(Descriptor):
     def match(self, v):
         return False if isinstance(v, str) or isinstance(v, unicode) else "Expected string"
 
-class nonempty_string(Schema):
+class NonemptyStringDescriptor(Descriptor):
     def match(self, v):
         if (isinstance(v, str) or isinstance(v, unicode)) \
                 and len(v) > 0:
@@ -36,17 +36,17 @@ class nonempty_string(Schema):
         else:
             return "Expected non-empty string"
 
-class anything(Schema):
+class WildDescriptor(Descriptor):
     def match(self, v):
         return False
 
-class _not(Schema):
+class NegationDescriptor(Descriptor):
     def __init__(self, t):
         self.t = t
     def match(self, v):
         return False if validate(v, self.t) else "Negation failed"
 
-class dictionary(Schema):
+class MapDescriptor(Descriptor):
     def __init__(self, keyType, valueType):
         self.keyType = keyType
         self.valueType = valueType
@@ -65,7 +65,7 @@ class dictionary(Schema):
                     haveResult = True
         return result if haveResult else False
 
-class array_of(Schema):
+class ArrayDescriptor(Descriptor):
     def __init__(self, elementType):
         self.elementType = elementType
     def match(self, v):
@@ -80,24 +80,24 @@ class array_of(Schema):
             counter = counter + 1
         return result if haveResult else False
 
-def merge(*pieces):
+def merge_dicts(*pieces):
     result = {}
     for piece in pieces:
         result.update(piece)
     return result
 
-class optional(Schema):
+class OptionalDescriptor(Descriptor):
     def __init__(self, t):
         self.t = t
     def match(self, v):
         return False if v == absent else validate(v, self.t)
 
-class email(regexp):
+class EmailDescriptor(RegexpDescriptor):
     def __init__(self):
         # TODO: better error message
-        regexp.__init__(self, r"^\S+@[^.\s]\S*\.[^.\s]{2,}$")
+        RegexpDescriptor.__init__(self, r"^\S+@[^.\s]\S*\.[^.\s]{2,}$")
 
-class general_or(Schema):
+class GeneralAlternationDescriptor(Descriptor):
     def __init__(self, options):
         self.options = options
     def match(self, v):
@@ -108,19 +108,19 @@ class general_or(Schema):
             result[key] = intermediate
         return result
 
-class or_dict(general_or):
+class NamedAlternationDescriptor(GeneralAlternationDescriptor):
     def __init__(self, options):
         if not (isinstance(options, dict) and options):
-            raise InvalidSchema("or_dict with non-dictionary or no options")
-        general_or.__init__(self, options)
+            raise InvalidDescriptor("or_dict with non-dictionary or no options")
+        GeneralAlternationDescriptor.__init__(self, options)
 
-class _or(general_or):
+class PositionalAlternationDescriptor(GeneralAlternationDescriptor):
     def __init__(self, *optionlist):
         if not optionlist:
-            raise InvalidSchema("_or with no options")
-        general_or.__init__(self, dict(zip(range(len(optionlist)), optionlist)))
+            raise InvalidDescriptor("_or with no options")
+        GeneralAlternationDescriptor.__init__(self, dict(zip(range(len(optionlist)), optionlist)))
 
-class _and(Schema):
+class AndDescriptor(Descriptor):
     def __init__(self, *schemas):
         self.schemas = schemas
     def match(self, v):
@@ -130,7 +130,7 @@ class _and(Schema):
         return False
 
 def validate(v, t):
-    if isinstance(t, Schema):
+    if isinstance(t, Descriptor):
         try:
             return t.match(v)
         except:
@@ -173,20 +173,20 @@ def validate(v, t):
         return "Value mismatch: expected " + str(t)
 
 global_environment = {
-    'regexp': regexp,
-    'nonempty_string': nonempty_string,
-    'dictionary': dictionary,
-    'array_of': array_of,
-    'merge': merge,
-    'optional': optional,
-    'email': email,
-    'or_dict': or_dict,
-    'number': number,
-    'string': string,
-    'anything': anything,
-    '_not': _not,
-    '_or': _or,
-    '_and': _and,
+    'regexp': RegexpDescriptor,
+    'nonempty_string': NonemptyStringDescriptor,
+    'dictionary': MapDescriptor,
+    'array_of': ArrayDescriptor,
+    'merge': merge_dicts,
+    'optional': OptionalDescriptor,
+    'email': EmailDescriptor,
+    'or_dict': NamedAlternationDescriptor,
+    'number': NumberDescriptor,
+    'string': StringDescriptor,
+    'anything': WildDescriptor,
+    '_not': NegationDescriptor,
+    '_or': PositionalAlternationDescriptor,
+    '_and': AndDescriptor,
     'true': True,
     'false': False,
     'null': None
