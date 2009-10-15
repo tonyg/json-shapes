@@ -193,7 +193,7 @@ global_environment = {
 }
 
 def load_schema(filename, extendingEnvironment = None):
-    f = file("plugin.schema.js")
+    f = file(filename)
     q = f.read()
     f.close()
     results = dict(extendingEnvironment or {})
