@@ -186,7 +186,10 @@ global_environment = {
     'anything': anything,
     '_not': _not,
     '_or': _or,
-    '_and': _and
+    '_and': _and,
+    'true': True,
+    'false': False,
+    'null': None
 }
 
 def load_schema(filename, extendingEnvironment = None):
