@@ -1,0 +1,4 @@
+Change "_or" etc. to "or_"
+
+Could use "extensible()" instead of a magic _extensible member, but
+then merging wouldn't work as straightforwardly as it does!
