@@ -4,62 +4,103 @@ import sys
 import re
 import traceback
 import types
+import operator
 
 class InvalidDescriptor(Exception): pass
 
-absent = object()
+class AbsentValue:
+    def __init__(self, name):
+        self.name = name
+    def __eq__(self, other):
+        return is_absent(other)
+    def __str__(self):
+        return repr(self)
+    def __repr__(self):
+        return 'AbsentValue(%s)' % (self.name,)
+
+def is_absent(v):
+    return isinstance(v, AbsentValue)
 
 class Descriptor:
-    def match(self, v):
+    def validate(self, v):
+        try:
+            return self._validate(v)
+        except:
+            (t, v, tb) = sys.exc_info()
+            err = '\n'.join(traceback.format_exception(t, v, tb))
+            return "Predicate failed: " + err
+
+    def _validate(self, v):
         raise NotImplementedError("Subclass responsibility")
 
 class RegexpDescriptor(Descriptor):
     def __init__(self, pat):
         self.pat = pat
         self.r = re.compile(pat)
-    def match(self, v):
+    def _validate(self, v):
         return False if self.r.match(v) else "regexp failed: " + self.pat
 
 class NumberDescriptor(Descriptor):
-    def match(self, v):
+    def _validate(self, v):
         return False if isinstance(v, int) or isinstance(v, float) else "Expected number"
 
 class StringDescriptor(Descriptor):
-    def match(self, v):
+    def _validate(self, v):
         return False if isinstance(v, str) or isinstance(v, unicode) else "Expected string"
 
-class NonemptyStringDescriptor(Descriptor):
-    def match(self, v):
-        if (isinstance(v, str) or isinstance(v, unicode)) \
-                and len(v) > 0:
+class BooleanDescriptor(Descriptor):
+    def _validate(self, v):
+        return False if isinstance(v, bool) else "Expected boolean"
+
+class NonemptyStringDescriptor(StringDescriptor):
+    def _validate(self, v):
+        return StringDescriptor._validate(self, v) or \
+               (False if len(v) > 0 else "Expected non-empty string")
+
+class ExactLiteralValueValidatorMixin:
+    def __init__(self, literal):
+        self.literal = literal
+    def _validate(self, v):
+        if v == self.literal:
             return False
+
+        if type(v) != type(self.literal):
+            return "Type mismatch: expected " + str(type(self.literal))
         else:
-            return "Expected non-empty string"
+            return "Value mismatch: expected " + repr(self.literal)
+
+class ExactStringDescriptor(ExactLiteralValueValidatorMixin, StringDescriptor): pass
+class ExactNumberDescriptor(ExactLiteralValueValidatorMixin, NumberDescriptor): pass
+class ExactBooleanDescriptor(ExactLiteralValueValidatorMixin, BooleanDescriptor): pass
+
+class ExactNullDescriptor(Descriptor):
+    def _validate(self, v):
+        return False if v is None else "Expected null"
 
 class WildDescriptor(Descriptor):
-    def match(self, v):
+    def _validate(self, v):
         return False
 
 class NegationDescriptor(Descriptor):
     def __init__(self, t):
-        self.t = t
-    def match(self, v):
-        return False if validate(v, self.t) else "Negation failed"
+        self.t = expand(t)
+    def _validate(self, v):
+        return False if self.t.validate(v) else "Negation failed"
 
 class MapDescriptor(Descriptor):
     def __init__(self, keyType, valueType):
-        self.keyType = keyType
-        self.valueType = valueType
-    def match(self, v):
+        self.keyType = expand(keyType)
+        self.valueType = expand(valueType)
+    def _validate(self, v):
         haveResult = False
         result = {}
         for (key, val) in v.iteritems():
-            intermediate = validate(key, self.keyType)
+            intermediate = self.keyType.validate(key)
             if intermediate:
                 result["key " + str(key)] = intermediate
                 haveResult = True
             else:
-                intermediate = validate(val, self.valueType)
+                intermediate = self.valueType.validate(val)
                 if intermediate:
                     result["valueAt " + str(key)] = intermediate
                     haveResult = True
@@ -67,13 +108,13 @@ class MapDescriptor(Descriptor):
 
 class ArrayDescriptor(Descriptor):
     def __init__(self, elementType):
-        self.elementType = elementType
-    def match(self, v):
+        self.elementType = expand(elementType)
+    def _validate(self, v):
         haveResult = False
         result = {}
         counter = 0
         for val in v:
-            intermediate = validate(val, self.elementType)
+            intermediate = self.elementType.validate(val)
             if intermediate:
                 result[counter] = intermediate
                 haveResult = True
@@ -83,14 +124,17 @@ class ArrayDescriptor(Descriptor):
 def merge_dicts(*pieces):
     result = {}
     for piece in pieces:
-        result.update(piece)
+        if isinstance(piece, dict):
+            result.update(piece)
+        else:
+            result.update(piece.as_dict())
     return result
 
 class OptionalDescriptor(Descriptor):
     def __init__(self, t):
-        self.t = t
-    def match(self, v):
-        return False if v == absent else validate(v, self.t)
+        self.t = expand(t)
+    def _validate(self, v):
+        return False if is_absent(v) else self.t.validate(v)
 
 class EmailDescriptor(RegexpDescriptor):
     def __init__(self):
@@ -99,11 +143,11 @@ class EmailDescriptor(RegexpDescriptor):
 
 class GeneralAlternationDescriptor(Descriptor):
     def __init__(self, options):
-        self.options = options
-    def match(self, v):
+        self.options = expand_dict(options)
+    def _validate(self, v):
         result = {}
         for (key, valType) in self.options.iteritems():
-            intermediate = validate(v, valType)
+            intermediate = valType.validate(v)
             if not intermediate: return False
             result[key] = intermediate
         return result
@@ -122,55 +166,86 @@ class PositionalAlternationDescriptor(GeneralAlternationDescriptor):
 
 class AndDescriptor(Descriptor):
     def __init__(self, *schemas):
-        self.schemas = schemas
-    def match(self, v):
+        self.schemas = expand_list(schemas)
+    def _validate(self, v):
         for t in self.schemas:
-            intermediate = validate(v, t)
+            intermediate = t.validate(v)
             if intermediate: return intermediate
         return False
 
-def validate(v, t):
-    if isinstance(t, Descriptor):
-        try:
-            return t.match(v)
-        except:
-            (t, v, tb) = sys.exc_info()
-            err = '\n'.join(traceback.format_exception_only(t, v))
-            return "Predicate failed: " + err
-
-    if v == t:
-        return False
-
-    if type(v) != type(t):
-        return "Type mismatch: expected " + str(type(t))
-
-    if type(t) == dict:
-        if not t.get("_extensible", False):
-            # Ensure there's nothing in the object that the schema doesn't have.
-            extraKeys = set(v) - (set(t) - set(["_extensible"]))
-            if extraKeys: return "Unexpected properties: " + (', '.join(extraKeys))
+class ExtensibleDictDescriptor(Descriptor):
+    def __init__(self, t):
+        self.t = expand_dict(t)
+    def _validate(self, v):
         haveResult = False
         result = {}
-        for (key, valType) in t.iteritems():
-            if not key == "_extensible":
-                intermediate = validate(v.get(key, absent), valType)
-                if intermediate:
-                    haveResult = True
-                    result[key] = intermediate
+        for (key, valType) in self.t.iteritems():
+            intermediate = valType.validate(v.get(key, AbsentValue(key)))
+            if intermediate:
+                haveResult = True
+                result[key] = intermediate
         return result if haveResult else False
-    elif type(t) == list:
-        if len(v) != len(t):
-            return "Length mismatch: expected array of length " + str(len(t))
+    def as_dict(self):
+        result = dict(self.t)
+        result["_extensible"] = True
+        return result
+
+class ExactDictDescriptor(ExtensibleDictDescriptor):
+    def _validate(self, v):
+        extraKeys = set(v) - set(self.t)
+        if extraKeys: return "Unexpected properties: " + (', '.join(extraKeys))
+        return ExtensibleDictDescriptor._validate(self, v)
+    def as_dict(self):
+        return self.t
+
+class ListDescriptor(Descriptor):
+    def __init__(self, t):
+        self.t = expand_list(t)
+    def _validate(self, v):
+        if len(v) != len(self.t):
+            return "Length mismatch: expected array of length " + str(len(self.t))
         haveResult = False
         result = {}
-        for i in range(len(t)):
-            intermediate = validate(v[i], t[i])
+        for i in range(len(self.t)):
+            intermediate = self.t[i].validate(v[i])
             if intermediate:
                 haveResult = True
                 result[str(i)] = intermediate
         return result if haveResult else False
-    else:
-        return "Value mismatch: expected " + str(t)
+
+def expand_dict(d):
+    return dict((k, expand(v)) for (k, v) in d.iteritems())
+
+def expand_list(xs):
+    return [expand(x) for x in xs]
+
+def expand(t):
+    if isinstance(t, Descriptor):
+        return t
+
+    if isinstance(t, dict):
+        t = dict(t) # make a copy, as we'll be altering it
+        if t.pop("_extensible", False):
+            return ExtensibleDictDescriptor(t)
+        else:
+            return ExactDictDescriptor(t)
+
+    if isinstance(t, list):
+        return ListDescriptor(t)
+
+    if isinstance(t, str) or isinstance(t, unicode):
+        return ExactStringDescriptor(t) # TODO: coerce to unicode maybe?
+
+    if isinstance(t, int) or isinstance(t, float):
+        return ExactNumberDescriptor(t)
+
+    if isinstance(t, bool):
+        return ExactBooleanDescriptor(t)
+
+    if t is None:
+        return ExactNullDescriptor()
+
+    raise InvalidDescriptor("Invalid proto-descriptor passed to expand", t)
 
 global_environment = {
     'regexp': RegexpDescriptor,
@@ -194,10 +269,12 @@ global_environment = {
 
 def load_schema(filename, extendingEnvironment = None):
     f = file(filename)
-    q = f.read()
+    sourcetext = f.read()
     f.close()
     results = dict(extendingEnvironment or {})
-    exec q in global_environment, results
+    exec sourcetext in global_environment, results
+    for key in results:
+        results[key] = expand(results[key])
     return results
 
 if __name__ == '__main__':
@@ -214,7 +291,7 @@ if __name__ == '__main__':
         import simplejson as json
 
     v = json.loads(sys.stdin.read())
-    result = validate(v, t)
+    result = t.validate(v)
     if result:
         print json.dumps(result)
         sys.exit(1)
